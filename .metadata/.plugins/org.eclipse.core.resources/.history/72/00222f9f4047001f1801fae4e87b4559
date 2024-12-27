@@ -1,0 +1,89 @@
+package java.demo.service;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.openpgp.*;
+import org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory;
+import org.bouncycastle.openpgp.operator.PBESecretKeyDecryptor;
+import org.bouncycastle.openpgp.operator.jcajce.JcaKeyFingerprintCalculator;
+import org.bouncycastle.openpgp.operator.jcajce.JcePBESecretKeyDecryptorBuilder;
+import org.bouncycastle.openpgp.operator.jcajce.JcePublicKeyDataDecryptorFactoryBuilder;
+import org.bouncycastle.util.io.Streams;
+
+import java.io.*;
+import java.security.Security;
+import java.util.Iterator;
+
+public class PGPFileDecryptor {
+
+    public static void main(String[] args) throws Exception {
+        System.out.println("Working Directory: " + System.getProperty("user.dir"));
+
+        // Paths to the encrypted PGP file, private key, and output file
+        String encryptedFile = "encrypted_file.pgp";
+        String privateKeyFile = "private_key.asc";
+        String outputFile = "decrypted_output.csv";
+        String passphrase = "your_passphrase";
+
+        // Construct absolute paths based on the working directory
+        String absoluteEncryptedFile = System.getProperty("user.dir") + File.separator + encryptedFile;
+        String absolutePrivateKeyFile = System.getProperty("user.dir") + File.separator + privateKeyFile;
+        String absoluteOutputFile = System.getProperty("user.dir") + File.separator + outputFile;
+        System.out.println("absoluteEncryptedFile=="+absoluteEncryptedFile+"absolutePrivateKeyFile=="+absolutePrivateKeyFile+"absoluteOutputFile=="+absoluteOutputFile);
+        decryptPGPFile(absoluteEncryptedFile, absolutePrivateKeyFile, passphrase, absoluteOutputFile);
+    }
+
+    public static void decryptPGPFile(String encryptedFile, String privateKeyFile, String passphrase, String outputFile) throws Exception {
+        // Initialize Bouncy Castle provider
+        Security.addProvider(new BouncyCastleProvider());
+
+        // Open the encrypted PGP file
+        FileInputStream encryptedStream = new FileInputStream(encryptedFile);
+        InputStream decoderStream = PGPUtil.getDecoderStream(encryptedStream);
+        PGPObjectFactory pgpFactory = new JcaPGPObjectFactory(decoderStream);
+
+        // Read the encrypted data packet
+        PGPEncryptedDataList encryptedDataList = (PGPEncryptedDataList) pgpFactory.nextObject();
+        PGPPublicKeyEncryptedData encryptedData = (PGPPublicKeyEncryptedData) encryptedDataList.get(0);
+
+        // Find the private key to decrypt the data
+        FileInputStream privateKeyStream = new FileInputStream(privateKeyFile);
+        InputStream decoderPrivateKeyStream = PGPUtil.getDecoderStream(privateKeyStream);
+        PGPSecretKeyRingCollection pgpSecretKeyRingCollection = new PGPSecretKeyRingCollection(decoderPrivateKeyStream, new JcaKeyFingerprintCalculator());
+
+        PGPSecretKey pgpSecretKey = null;
+
+        // Iterate through each key ring and find the appropriate secret key
+        outerLoop:
+        for (Iterator<PGPSecretKeyRing> it = pgpSecretKeyRingCollection.getKeyRings(); it.hasNext(); ) {
+            Object keyRingObj = it.next();
+            PGPSecretKeyRing keyRing = (PGPSecretKeyRing) keyRingObj;
+            for (Iterator<PGPSecretKey> iter = keyRing.getSecretKeys(); iter.hasNext(); ) {
+                Object keyObj = iter.next();
+                PGPSecretKey key = (PGPSecretKey) keyObj;
+                if (!key.isSigningKey() && key.getKeyID() == encryptedData.getKeyID()) {
+                    pgpSecretKey = key;
+                    break outerLoop;
+                }
+            }
+        }
+
+        if (pgpSecretKey == null) {
+            throw new PGPException("Secret key for message not found.");
+        }
+
+        // Create a JCE based secret key decryptor
+        PBESecretKeyDecryptor pbeSecretKeyDecryptor = new JcePBESecretKeyDecryptorBuilder().build(passphrase.toCharArray());
+        PGPPrivateKey privateKey = pgpSecretKey.extractPrivateKey(pbeSecretKeyDecryptor);
+
+        // Decrypt the data
+        InputStream decryptedStream = encryptedData.getDataStream(new JcePublicKeyDataDecryptorFactoryBuilder().setProvider("BC").build(privateKey));
+        byte[] decryptedBytes = Streams.readAll(decryptedStream);
+
+        // Write decrypted data to output file
+        FileOutputStream outputFileStream = new FileOutputStream(outputFile);
+        outputFileStream.write(decryptedBytes);
+        outputFileStream.close();
+
+        System.out.println("Decryption successful. Output written to: " + outputFile);
+    }
+
+}
